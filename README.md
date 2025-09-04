@@ -23,7 +23,7 @@
 
 ### 1. 环境准备
 
-在运行脚本之前，请确保您的系统中已安装所需的 Python 库。可以使用以下命令一键安装：
+在运行脚本之前，请确保您已安装所需的 Python 库。可以使用以下命令一键安装：
 
 ```bash
 pip install pyautogui numpy opencv-python pygetwindow pynput scikit-learn pywin32
@@ -71,3 +71,4 @@ python main.py
 
 - 此脚本基于 **Blue Marble** 功能设计，使用时请确保打开了 Wplace 窗口并已经安装了 **Blue Marble** 插件。
 - 对于已经被涂上错误颜色的色块，脚本可能无法很好地识别并进行修正。正在考虑在未来的版本中改进此功能。
+
