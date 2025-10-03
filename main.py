@@ -28,25 +28,25 @@ COLOR_FILENAME = "exclusion_zones.txt" # 使用同一个文件来存储颜色，
 # 1. 目标颜色与容差
 TARGET_COLOR_RGB = (0, 0, 0)      # 默认目标颜色 (R, G, B), 可通过 Q 热键动态修改。
                                    # 脚本启动时会自动从文件中加载上一次的颜色。
-TOLERANCE = 3                     # 颜色容差，值越大，识别越宽松。
+TOLERANCE = 4                     # 颜色容差，值越大，识别越宽松。
 
 # 2. 鼠标移动与点击速度
-# 移动速度，值越大越慢，越“人性化”
-MOUSE_MOVE_DURATION_BASE = 0.05
-MOUSE_MOVE_DURATION_RANGE = 0.05
+# 移动速度，值越大越慢，越"人性化"
+MOUSE_MOVE_DURATION_BASE = 0    # 增加这个值来减慢鼠标移动速度
+MOUSE_MOVE_DURATION_RANGE = 0    # 增加这个值来增加移动随机性
 # 点击间隔，值越大越慢
-BASE_CLICK_INTERVAL = 0.01
-RANDOM_DELAY_RANGE = 0.01
+BASE_CLICK_INTERVAL = 0    # 增加这个值来减慢点击速度
+RANDOM_DELAY_RANGE = 0    # 增加这个值来增加随机性
 
 # 3. 鼠标抖动与偏移
 # 鼠标抖动停止阈值，当鼠标移动距离超过该值时，脚本暂停。
 SHAKE_STOP_THRESHOLD = 300
-# 随机偏移像素，增加“人性化”
+# 随机偏移像素，增加"人性化"
 RANDOM_OFFSET_PIXELS = 1
 
 # 4. 绘图与优化
-USE_SPACEBAR_DRAG = False          # 是否启用空格拖动优化。
-PIXEL_ADJACENCY_THRESHOLD = 25   # 判断像素是否连续的距离阈值。
+USE_SPACEBAR_DRAG = True          # 是否启用空格拖动优化。
+PIXEL_ADJACENCY_THRESHOLD = 50   # 判断像素是否连续的距离阈值。
 
 # 5. 窗口与区域配置
 TARGET_WINDOW_TITLE = "Paint the world"
@@ -74,6 +74,9 @@ last_mouse_pos = pyautogui.position()
 zone_capture_step = 0
 temp_zone_p1 = (0, 0)
 temp_zone_rect = (0, 0, 0, 0)
+
+# 创建键盘控制器用于模拟按键
+keyboard_controller = keyboard.Controller()
 
 # -------------------【智能色彩校正】-------------------
 class ColorCorrector:
@@ -430,20 +433,37 @@ def main():
                 if len(group) == 1: # 单点, 直接点击
                     if not DEBUG_MODE: pyautogui.click()
                     logging.info(f"执行 {tasks_done+1}/{total_tasks} | 单点:({final_x},{final_y}) {'(调试)' if DEBUG_MODE else ''}")
+                    # 【修复】单点点击后立即应用延迟
+                    time.sleep(max(0, BASE_CLICK_INTERVAL + random.uniform(-RANDOM_DELAY_RANGE, RANDOM_DELAY_RANGE)))
                 else: # 多点, 按住空格拖动
                     logging.info(f"执行 {tasks_done+1}-{tasks_done+len(group)}/{total_tasks} | 拖动画笔, 共 {len(group)} 点...")
-                    if not DEBUG_MODE: pyautogui.keyDown('space')
-                    for i in range(1, len(group)):
-                        if not script_active or terminate_script: break # 拖动过程中也检查暂停或终止
-                        point = group[i]
-                        final_x = target_window_info['left'] + point[0] + random.randint(-RANDOM_OFFSET_PIXELS, RANDOM_OFFSET_PIXELS)
-                        final_y = target_window_info['top'] + point[1] + random.randint(-RANDOM_OFFSET_PIXELS, RANDOM_OFFSET_PIXELS)
-                        pyautogui.moveTo(final_x, final_y, duration=0.01) # 拖动时快速移动
-                    if not DEBUG_MODE: pyautogui.keyUp('space')
+                    
+                    if not DEBUG_MODE: 
+                        # 使用pynput的键盘控制器按下空格键
+                        keyboard_controller.press(keyboard.Key.space)
+                        time.sleep(0.2)  # 增加延迟确保空格键被识别
+                    
+                    try:
+                        for i in range(1, len(group)):
+                            if not script_active or terminate_script: break
+                            point = group[i]
+                            final_x = target_window_info['left'] + point[0] + random.randint(-RANDOM_OFFSET_PIXELS, RANDOM_OFFSET_PIXELS)
+                            final_y = target_window_info['top'] + point[1] + random.randint(-RANDOM_OFFSET_PIXELS, RANDOM_OFFSET_PIXELS)
+                            pyautogui.moveTo(final_x, final_y, duration=0.01)
+                            # 拖动时每个点之间也应用延迟
+                            time.sleep(max(0, BASE_CLICK_INTERVAL + random.uniform(-RANDOM_DELAY_RANGE, RANDOM_DELAY_RANGE)))
+                    finally:
+                        # 确保空格键被释放
+                        if not DEBUG_MODE: 
+                            time.sleep(0.1)  # 拖动结束前短暂延迟
+                            keyboard_controller.release(keyboard.Key.space)
+                    
+                    # 拖动完成后应用延迟
+                    time.sleep(max(0, BASE_CLICK_INTERVAL + random.uniform(-RANDOM_DELAY_RANGE, RANDOM_DELAY_RANGE)))
                 
                 tasks_done += len(group)
                 last_mouse_pos = pyautogui.position()
-                time.sleep(max(0, BASE_CLICK_INTERVAL + random.uniform(-RANDOM_DELAY_RANGE, RANDOM_DELAY_RANGE)))
+                # 【注意】移除了原来在组末尾的 sleep，因为现在每个操作后都有独立的延迟
             
             pause_script("本轮任务完成")
 
