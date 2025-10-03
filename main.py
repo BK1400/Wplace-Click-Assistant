@@ -40,13 +40,14 @@ RANDOM_DELAY_RANGE = 0    # 增加这个值来增加随机性
 
 # 3. 鼠标抖动与偏移
 # 鼠标抖动停止阈值，当鼠标移动距离超过该值时，脚本暂停。
-SHAKE_STOP_THRESHOLD = 300
+SHAKE_STOP_THRESHOLD = 100
 # 随机偏移像素，增加"人性化"
 RANDOM_OFFSET_PIXELS = 1
 
 # 4. 绘图与优化
 USE_SPACEBAR_DRAG = True          # 是否启用空格拖动优化。
 PIXEL_ADJACENCY_THRESHOLD = 50   # 判断像素是否连续的距离阈值。
+MIN_DRAG_POINTS = 4              # 启用拖动功能的最小连续点数
 
 # 5. 窗口与区域配置
 TARGET_WINDOW_TITLE = "Paint the world"
@@ -242,8 +243,22 @@ def group_targets_for_drag(targets):
             current_group = [targets[i]]
     groups.append(current_group)
     
-    logging.info(f"优化分析: {len(targets)}个目标点被分成了 {len(groups)} 组笔画。")
-    return groups
+    # 优化：将点数少于MIN_DRAG_POINTS的组拆分成单点
+    optimized_groups = []
+    for group in groups:
+        if len(group) >= MIN_DRAG_POINTS:
+            optimized_groups.append(group)
+        else:
+            # 将小分组拆分成单点
+            for point in group:
+                optimized_groups.append([point])
+    
+    drag_groups = [g for g in optimized_groups if len(g) >= MIN_DRAG_POINTS]
+    single_points = [g for g in optimized_groups if len(g) < MIN_DRAG_POINTS]
+    
+    logging.info(f"优化分析: {len(targets)}个目标点被分成了 {len(optimized_groups)} 组，其中 {len(drag_groups)} 组使用拖动，{len(single_points)} 个单点使用点击。")
+    
+    return optimized_groups
 
 def scan_for_targets():
     """扫描窗口, 找出所有目标并填充任务列表"""
@@ -394,6 +409,7 @@ def main():
     load_exclusion_zones()
     logging.info(f"“究极人性化”脚本 v6 已启动。调试模式: {'开启' if DEBUG_MODE else '关闭'}")
     logging.info(f"W:启动/暂停 | Q:取色 | F9-F9-F10:定义并保存忽略区域 | G:强制退出脚本")
+    logging.info(f"空格拖动优化: {'开启' if USE_SPACEBAR_DRAG else '关闭'} (最小连续点数: {MIN_DRAG_POINTS})")
     
     global last_mouse_pos
     last_mouse_pos = pyautogui.position()
