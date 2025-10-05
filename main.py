@@ -42,12 +42,12 @@ SCAN_INTERVAL = 0.1               # 扫描间隔，值越小扫描越快但CPU�
 
 # 3. 绘图与优化
 USE_SPACEBAR_DRAG = True          # 是否启用空格拖动优化。
-PIXEL_ADJACENCY_THRESHOLD = 50   # 判断像素是否连续的距离阈值。
+PIXEL_ADJACENCY_THRESHOLD = 35   # 判断像素是否连续的距离阈值。
 MIN_DRAG_POINTS = 4              # 启用拖动功能的最小连续点数
 
 # 4. 窗口与区域配置
 TARGET_WINDOW_TITLE = "Paint the world"
-CROP_WINDOW_TOP = 185            # 从窗口顶部裁剪掉的高度，用于避开地址栏/书签栏。
+CROP_WINDOW_TOP = 145            # 从窗口顶部裁剪掉的高度，用于避开地址栏/书签栏。
 EXCLUSION_ZONES = []            # 备用列表, 脚本会优先从 exclusion_zones.txt 加载。
 
 # 5. 截图学习配置
