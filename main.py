@@ -2,14 +2,12 @@ import pyautogui
 import numpy as np
 import cv2
 import time
-import random
 import logging
 import pygetwindow as gw
 from pynput import keyboard
 from threading import Thread
 import math
 import os
-from sklearn.linear_model import LinearRegression
 from datetime import datetime
 
 # -------------------【日志与文件配置】-------------------
@@ -30,50 +28,47 @@ TOLERANCE = 10                    # 颜色容差，值越大，识别越宽松�
 
 # 2. 性能参数
 # 鼠标移动速度（秒），值越小移动越快
-MOUSE_MOVE_DURATION = 0        # 普通移动速度
-DRAG_MOVE_DURATION = 0        # 拖动时的移动速度（更快）
+MOUSE_MOVE_DURATION = 0           # 普通移动速度
+DRAG_MOVE_DURATION = 0            # 拖动时的移动速度（更快）
+DEBUG_MOVE_DURATION = 0.1         # 调试模式下的移动速度
 
 # 点击间隔（秒），值越小点击越快
-CLICK_INTERVAL = 0             # 单次点击间隔
-DRAG_POINT_INTERVAL = 0        # 拖动时点之间的间隔
+CLICK_INTERVAL = 0                # 单次点击间隔
+DRAG_POINT_INTERVAL = 0           # 拖动时点之间的间隔
 
 # 扫描参数
 SCAN_INTERVAL = 0.1               # 扫描间隔，值越小扫描越快但CPU占用更高
 
 # 3. 绘图与优化
 USE_SPACEBAR_DRAG = True          # 是否启用空格拖动优化。
-PIXEL_ADJACENCY_THRESHOLD = 35   # 判断像素是否连续的距离阈值。
-MIN_DRAG_POINTS = 4              # 启用拖动功能的最小连续点数
+PIXEL_ADJACENCY_THRESHOLD = 35    # 判断像素是否连续的距离阈值。
+MIN_DRAG_POINTS = 4               # 启用拖动功能的最小连续点数
 
 # 4. 窗口与区域配置
 TARGET_WINDOW_TITLE = "Paint the world"
-CROP_WINDOW_TOP = 145            # 从窗口顶部裁剪掉的高度，用于避开地址栏/书签栏。
-EXCLUSION_ZONES = []            # 备用列表, 脚本会优先从 exclusion_zones.txt 加载。
+CROP_WINDOW_TOP = 145             # 从窗口顶部裁剪掉的高度，用于避开地址栏/书签栏。
+EXCLUSION_ZONES = []              # 备用列表, 脚本会优先从 exclusion_zones.txt 加载。
 
-# 5. 截图学习配置
-SAMPLE_SIZE = 300                # 截图大小（300x300）
-MIN_SAMPLES_FOR_LEARNING = 10    # 开始学习所需的最小样本数
-SAMPLE_ANALYSIS_RADIUS = 150     # 在截图内分析像素的范围
+# 5. 像素大小判定配置
+SMALL_PIXEL_MAX_DIMENSION = 20    # 小像素点的最大尺寸
+SMALL_PIXEL_MIN_AREA = 2          # 添加最小面积，避免噪声
 
-# 6. 像素大小判定配置
-SMALL_PIXEL_MAX_AREA = 200       # 小像素点的最大面积
-SMALL_PIXEL_MAX_DIMENSION = 20   # 小像素点的最大尺寸（宽或高）
-SMALL_PIXEL_MIN_AREA = 2         # 添加最小面积，避免噪声
+# 6. 阈值调整步长配置
+DIMENSION_ADJUST_STEP = 5         # 像素点阈值步长
 
 # 7. 热键
 HOTKEY_RUN_PAUSE = keyboard.KeyCode.from_char('w')      # W键：启停脚本
-HOTKEY_PICK_COLOR = keyboard.KeyCode.from_char('q')     # Q键：取色并学习
+HOTKEY_PICK_COLOR = keyboard.KeyCode.from_char('q')     # Q键：取色
 HOTKEY_TERMINATE = keyboard.KeyCode.from_char('g')      # G键：强制退出脚本
 HOTKEY_DEBUG_SCAN = keyboard.KeyCode.from_char('x')     # X键：截取扫描截图
 HOTKEY_MANUAL_ZONE = keyboard.KeyCode.from_char('h')    # H键：设置忽略区域（按两次确定区域）
 HOTKEY_TOGGLE_DEBUG = keyboard.KeyCode.from_char('z')   # Z键：切换调试模式（只移动不点击）
 HOTKEY_TOGGLE_DRAG = keyboard.KeyCode.from_char('t')    # T键：启停拖动功能
-HOTKEY_INCREASE_THRESHOLD = keyboard.KeyCode.from_char('[')  # [键：增大像素阈值
-HOTKEY_DECREASE_THRESHOLD = keyboard.KeyCode.from_char(']')  # ]键：减小像素阈值
+HOTKEY_DECREASE_THRESHOLD = keyboard.KeyCode.from_char('[')  # [键：减小像素阈值
+HOTKEY_INCREASE_THRESHOLD = keyboard.KeyCode.from_char(']')  # ]键：增大像素阈值
 
 # 8. 文件路径配置
 ZONES_FILENAME = "exclusion_zones.txt"
-SAMPLE_FOLDER = "pixel_samples"
 DEBUG_FOLDER = "debug_scans"
 
 # -------------------【全局状态变量】-------------------
@@ -88,54 +83,10 @@ DEBUG_MODE = False
 # 手动区域选择状态
 manual_zone_step = 0
 manual_zone_p1 = (0, 0)
-small_pixel_features = []
-big_pixel_features = []
 
 keyboard_controller = keyboard.Controller()
 
-# -------------------【智能色彩校正】-------------------
-class ColorCorrector:
-    """通过已知数据训练模型, 用于反算wplace悬停颜色效果"""
-    def __init__(self):
-        # 悬停颜色 (X) -> 真实颜色 (y)
-        hover_colors = np.array([
-            [126, 122, 161], [82, 82, 82], [235, 235, 235], [231, 215, 117]
-        ])
-        real_colors = np.array([
-            [74, 66, 132], [0, 0, 0], [255, 255, 255], [249, 221, 59]
-        ])
-        self.models = {}
-        for i, channel in enumerate(['R', 'G', 'B']):
-            X = hover_colors[:, i].reshape(-1, 1)
-            y = real_colors[:, i]
-            model = LinearRegression()
-            model.fit(X, y)
-            self.models[channel] = model
-        logging.info("智能色彩校正模型已初始化。")
-
-    def reverse(self, hover_rgb):
-        """根据悬停颜色预测真实颜色"""
-        r, g, b = hover_rgb
-        pred_r = self.models['R'].predict(np.array([[r]]))[0]
-        pred_g = self.models['G'].predict(np.array([[g]]))[0]
-        pred_b = self.models['B'].predict(np.array([[b]]))[0]
-        # 约束到 0-255 范围并取整
-        real_rgb = (
-            int(np.clip(pred_r, 0, 255)),
-            int(np.clip(pred_g, 0, 255)),
-            int(np.clip(pred_b, 0, 255))
-        )
-        return real_rgb
-
-color_corrector = ColorCorrector()
-
 # -------------------【文件与区域管理】-------------------
-def ensure_sample_folder():
-    """确保样本文件夹存在"""
-    if not os.path.exists(SAMPLE_FOLDER):
-        os.makedirs(SAMPLE_FOLDER)
-        logging.info(f"创建样本文件夹: {SAMPLE_FOLDER}")
-
 def ensure_debug_folder():
     """确保调试文件夹存在"""
     if not os.path.exists(DEBUG_FOLDER):
@@ -305,7 +256,6 @@ def save_debug_scan(screenshot_cv, mask, valid_contours, all_contours, scan_info
         info_lines = [
             f"Target Color: {TARGET_COLOR_RGB}",
             f"Tolerance: {TOLERANCE}",
-            f"Small Pixel Max Area: {SMALL_PIXEL_MAX_AREA}",
             f"Small Pixel Max Dim: {SMALL_PIXEL_MAX_DIMENSION}",
             f"All Contours: {len(all_contours)}",
             f"Valid Small Pixels: {len(valid_contours)}",
@@ -335,178 +285,6 @@ def save_debug_scan(screenshot_cv, mask, valid_contours, all_contours, scan_info
         logging.error(f"保存调试扫描时发生错误: {e}")
         return None
 
-# -------------------【截图学习功能】-------------------
-def capture_sample_screenshot(pos, target_color):
-    """截取以鼠标位置为中心的300x300截图并保存"""
-    ensure_sample_folder()
-    
-    win_info = get_active_window_info()
-    if not win_info:
-        logging.warning("无法截取样本截图：未找到目标窗口")
-        return None
-    
-    try:
-        # 计算截图区域（以鼠标位置为中心）
-        half_size = SAMPLE_SIZE // 2
-        left = max(win_info['left'], pos.x - half_size)
-        top = max(win_info['top'], pos.y - half_size)
-        right = min(win_info['left'] + win_info['width'], pos.x + half_size)
-        bottom = min(win_info['top'] + win_info['height'], pos.y + half_size)
-        
-        # 调整区域确保大小为300x300
-        width = right - left
-        height = bottom - top
-        
-        if width <= 0 or height <= 0:
-            logging.warning("截图区域无效")
-            return None
-        
-        # 截取区域
-        screenshot = pyautogui.screenshot(region=(left, top, width, height))
-        screenshot_cv = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-        
-        # 分析截图中的像素
-        analysis_result = analyze_sample_screenshot(screenshot_cv, target_color, (left, top))
-        
-        # 生成文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        pixel_type = "small" if analysis_result['is_small'] else "large"
-        filename = f"{timestamp}_{pixel_type}_{analysis_result['area']:.0f}area_{analysis_result['width']}x{analysis_result['height']}.png"
-        filepath = os.path.join(SAMPLE_FOLDER, filename)
-        
-        # 在截图上标记中心点
-        marked_screenshot = screenshot_cv.copy()
-        center_x = width // 2
-        center_y = height // 2
-        cv2.circle(marked_screenshot, (center_x, center_y), 5, (0, 0, 255), -1)  # 红色中心点
-        cv2.putText(marked_screenshot, f"Area: {analysis_result['area']:.1f}", 
-                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        cv2.putText(marked_screenshot, f"Size: {analysis_result['width']}x{analysis_result['height']}", 
-                   (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        
-        # 保存截图
-        cv2.imwrite(filepath, marked_screenshot)
-        
-        # 记录学习数据
-        features = {
-            'area': analysis_result['area'],
-            'width': analysis_result['width'],
-            'height': analysis_result['height'],
-            'perimeter': analysis_result['perimeter'],
-            'aspect_ratio': analysis_result['aspect_ratio'],
-            'circularity': analysis_result['circularity']
-        }
-        
-        if analysis_result['is_small']:
-            small_pixel_features.append(features)
-            logging.info(f"保存小像素样本: {filename}")
-        else:
-            big_pixel_features.append(features)
-            logging.info(f"保存大像素样本: {filename}")
-        
-        # 如果样本数量足够，更新判定阈值
-        if len(small_pixel_features) + len(big_pixel_features) >= MIN_SAMPLES_FOR_LEARNING:
-            update_pixel_thresholds()
-        
-        return analysis_result
-        
-    except Exception as e:
-        logging.error(f"截取样本截图时发生错误: {e}")
-        return None
-
-def analyze_sample_screenshot(screenshot_cv, target_color, region_offset):
-    """分析样本截图中的像素特征"""
-    try:
-        # 创建颜色掩膜
-        target_color_bgr = (target_color[2], target_color[1], target_color[0])
-        lower = np.array([max(0, c - TOLERANCE) for c in target_color_bgr])
-        upper = np.array([min(255, c + TOLERANCE) for c in target_color_bgr])
-        mask = cv2.inRange(screenshot_cv, lower, upper)
-        
-        # 查找轮廓
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if not contours:
-            logging.warning("样本截图中未找到任何匹配颜色的像素块")
-            return None
-        
-        # 找到距离截图中心最近的轮廓
-        center_x = screenshot_cv.shape[1] // 2
-        center_y = screenshot_cv.shape[0] // 2
-        min_distance = float('inf')
-        target_contour = None
-        
-        for contour in contours:
-            # 计算轮廓的边界矩形
-            x, y, w, h = cv2.boundingRect(contour)
-            contour_center_x = x + w/2
-            contour_center_y = y + h/2
-            
-            # 计算轮廓中心与截图中心的距离
-            distance = math.sqrt((contour_center_x - center_x)**2 + (contour_center_y - center_y)**2)
-            
-            # 只考虑距离较近的轮廓
-            if distance < SAMPLE_ANALYSIS_RADIUS and distance < min_distance:
-                min_distance = distance
-                target_contour = contour
-        
-        if target_contour is None:
-            logging.warning("未找到靠近截图中心的像素轮廓")
-            return None
-        
-        # 计算轮廓特征
-        area = cv2.contourArea(target_contour)
-        x, y, w, h = cv2.boundingRect(target_contour)
-        perimeter = cv2.arcLength(target_contour, True)
-        aspect_ratio = w / h if h > 0 else 0
-        circularity = (4 * math.pi * area) / (perimeter * perimeter) if perimeter > 0 else 0
-        
-        # 判断是否是小像素
-        is_small = (area < SMALL_PIXEL_MAX_AREA and 
-                   w < SMALL_PIXEL_MAX_DIMENSION and 
-                   h < SMALL_PIXEL_MAX_DIMENSION)
-        
-        return {
-            'area': area,
-            'width': w,
-            'height': h,
-            'perimeter': perimeter,
-            'aspect_ratio': aspect_ratio,
-            'circularity': circularity,
-            'is_small': is_small,
-            'distance': min_distance
-        }
-        
-    except Exception as e:
-        logging.error(f"分析样本截图时发生错误: {e}")
-        return None
-
-def update_pixel_thresholds():
-    """根据学习数据更新像素判定阈值"""
-    global SMALL_PIXEL_MAX_AREA, SMALL_PIXEL_MAX_DIMENSION
-    
-    if not small_pixel_features:
-        return
-    
-    # 计算小像素样本的面积和尺寸统计
-    areas = [sample['area'] for sample in small_pixel_features]
-    widths = [sample['width'] for sample in small_pixel_features]
-    heights = [sample['height'] for sample in small_pixel_features]
-    
-    # 使用平均值加上一倍标准差作为阈值
-    area_mean = np.mean(areas)
-    area_std = np.std(areas)
-    width_mean = np.mean(widths)
-    width_std = np.std(widths)
-    height_mean = np.mean(heights)
-    height_std = np.std(heights)
-    
-    SMALL_PIXEL_MAX_AREA = area_mean + area_std
-    SMALL_PIXEL_MAX_DIMENSION = max(width_mean + width_std, height_mean + height_std)
-    
-    logging.info(f"学习阈值已更新: 面积<{SMALL_PIXEL_MAX_AREA:.1f}, 尺寸<{SMALL_PIXEL_MAX_DIMENSION:.1f}")
-    logging.info(f"小像素样本统计: 面积({area_mean:.1f}±{area_std:.1f}), 尺寸({width_mean:.1f}±{width_std:.1f})x({height_mean:.1f}±{height_std:.1f})")
-
 # -------------------【窗口识别功能】-------------------
 def get_active_window_info():
     """获取并返回当前活动窗口的信息, 用于坐标转换"""
@@ -518,9 +296,6 @@ def get_active_window_info():
             
         window = windows[0]
         
-        # 调试信息：显示窗口详细信息
-        logging.info(f"找到窗口: 标题='{window.title}', 位置=({window.left}, {window.top}), 尺寸={window.width}x{window.height}")
-        
         # 确保窗口坐标不为负
         win_x = max(0, window.left)
         win_y = max(0, window.top)
@@ -528,9 +303,6 @@ def get_active_window_info():
         # 计算裁剪后的窗口区域
         crop_top = CROP_WINDOW_TOP
         crop_height = max(0, window.height - crop_top)
-        
-        # 调试信息：显示裁剪后的窗口区域
-        logging.info(f"裁剪后窗口区域: 位置=({win_x}, {win_y + crop_top}), 尺寸={window.width}x{crop_height}")
         
         return {
             'left': win_x, 
@@ -641,7 +413,7 @@ def scan_for_targets(debug_mode=False):
             continue
             
         # 检查是否是小像素
-        if area < SMALL_PIXEL_MAX_AREA and w < SMALL_PIXEL_MAX_DIMENSION and h < SMALL_PIXEL_MAX_DIMENSION:
+        if w < SMALL_PIXEL_MAX_DIMENSION and h < SMALL_PIXEL_MAX_DIMENSION:
             valid_contours.append(c)
         else:
             big_pixels_found += 1
@@ -696,6 +468,24 @@ def is_in_exclusion_zone(x, y, w, h):
             return True
     return False
 
+# -------------------【阈值调整功能】-------------------
+def adjust_thresholds(increase=True):
+    """调整像素判定阈值"""
+    global SMALL_PIXEL_MAX_DIMENSION
+    
+    old_dimension = SMALL_PIXEL_MAX_DIMENSION
+    
+    if increase:
+        # 增大阈值 - 识别更多小像素
+        SMALL_PIXEL_MAX_DIMENSION += DIMENSION_ADJUST_STEP
+        action = "增大"
+    else:
+        # 减小阈值 - 识别更少小像素
+        SMALL_PIXEL_MAX_DIMENSION = max(5, SMALL_PIXEL_MAX_DIMENSION - DIMENSION_ADJUST_STEP)
+        action = "减小"
+    
+    logging.info(f"阈值{action}: 尺寸 {old_dimension} -> {SMALL_PIXEL_MAX_DIMENSION}")
+
 # -------------------【主循环与热键控制】-------------------
 def pause_script(reason=""):
     """统一的暂停脚本函数"""
@@ -710,26 +500,27 @@ def show_shortcuts():
     """显示快捷键说明"""
     logging.info("=== 快捷键说明 ===")
     logging.info("W: 启停脚本")
-    logging.info("Q: 取色并学习")
+    logging.info("Q: 取色")
     logging.info("X: 扫描模式（仅截图分析）")
     logging.info("H: 设置忽略区域（按两次确定区域）")
-    logging.info("Z: 截取扫描截图")
+    logging.info("Z: 切换调试模式（只移动不点击）")
     logging.info("T: 启停拖动功能")
-    logging.info("[: 增大像素阈值")
-    logging.info("]: 减小像素阈值")
+    logging.info("[: 减小像素阈值（识别更少小像素）")
+    logging.info("]: 增大像素阈值（识别更多小像素）")
     logging.info("G: 退出脚本")
+    logging.info(f"当前阈值: 尺寸<{SMALL_PIXEL_MAX_DIMENSION}")
 
 def on_press(key):
     """键盘按键处理"""
     global script_active, terminate_script, TARGET_COLOR_RGB
-    global SMALL_PIXEL_MAX_AREA, SMALL_PIXEL_MAX_DIMENSION, DEBUG_MODE, USE_SPACEBAR_DRAG
+    global SMALL_PIXEL_MAX_DIMENSION, DEBUG_MODE, USE_SPACEBAR_DRAG
     global manual_zone_step, manual_zone_p1
 
     # 'G' 键: 退出脚本
     if key == HOTKEY_TERMINATE:
         logging.info("========== 检测到 'G' 键, 正在终止脚本... ==========")
         terminate_script = True
-        return False # 返回False来停止键盘监听器
+        return False
 
     # 'w' 键: 启动/暂停
     if key == HOTKEY_RUN_PAUSE:
@@ -743,7 +534,7 @@ def on_press(key):
     # X 键: 截取扫描截图
     if key == HOTKEY_DEBUG_SCAN:
         logging.info("========== 执行扫描截图 ==========")
-        scan_for_targets(debug_mode=True)  # 确保传递debug_mode=True
+        scan_for_targets(debug_mode=True)
         return
 
     # H 键: 手动区域选择
@@ -766,18 +557,14 @@ def on_press(key):
         logging.info(f"========== 拖动功能已 {status} ==========")
         return
 
-    # [ 键: 增加阈值
-    if key == HOTKEY_INCREASE_THRESHOLD:
-        SMALL_PIXEL_MAX_AREA += 50
-        SMALL_PIXEL_MAX_DIMENSION += 5
-        logging.info(f"增加阈值: 面积<{SMALL_PIXEL_MAX_AREA}, 尺寸<{SMALL_PIXEL_MAX_DIMENSION}")
+    # [ 键: 减小阈值
+    if key == HOTKEY_DECREASE_THRESHOLD:
+        adjust_thresholds(increase=False)
         return
 
-    # ] 键: 减小阈值
-    if key == HOTKEY_DECREASE_THRESHOLD:
-        SMALL_PIXEL_MAX_AREA = max(10, SMALL_PIXEL_MAX_AREA - 50)
-        SMALL_PIXEL_MAX_DIMENSION = max(5, SMALL_PIXEL_MAX_DIMENSION - 5)
-        logging.info(f"减小阈值: 面积<{SMALL_PIXEL_MAX_AREA}, 尺寸<{SMALL_PIXEL_MAX_DIMENSION}")
+    # ] 键: 增大阈值
+    if key == HOTKEY_INCREASE_THRESHOLD:
+        adjust_thresholds(increase=True)
         return
 
     # 在任何功能键按下时, 如果脚本在运行, 则先暂停
@@ -785,23 +572,18 @@ def on_press(key):
         if key in [HOTKEY_PICK_COLOR, HOTKEY_MANUAL_ZONE]:
             pause_script(f"功能键 {key} 按下")
     
-    # 'q' 键: 拾取颜色并保存样本截图
+    # 'q' 键: 拾取颜色
     if key == HOTKEY_PICK_COLOR:
         pos = pyautogui.position()
-        hover_color = pyautogui.pixel(pos.x, pos.y)
-        real_color = color_corrector.reverse(hover_color)
-        TARGET_COLOR_RGB = real_color
-        
-        # 截取样本截图并分析
-        analysis_result = capture_sample_screenshot(pos, real_color)
-        if analysis_result:
-            pixel_type = "小像素" if analysis_result['is_small'] else "大像素"
-            logging.info(f"样本分析: 位置({pos.x},{pos.y}), 面积={analysis_result['area']:.1f}, 尺寸={analysis_result['width']}x{analysis_result['height']}, 类型={pixel_type}")
-        else:
-            logging.warning("无法分析当前像素样本")
-        
-        save_exclusion_data(color_rgb=real_color) # 立即保存新颜色
-        logging.info(f"颜色选择: 鼠标位置 {pos}, 悬停色 {hover_color}, 预测真实颜色 -> {real_color}")
+        try:
+            hover_color = pyautogui.pixel(pos.x, pos.y)
+            # 直接使用悬停颜色
+            TARGET_COLOR_RGB = hover_color
+            
+            save_exclusion_data(color_rgb=hover_color)
+            logging.info(f"颜色选择: 鼠标位置 {pos}, 颜色 -> {hover_color}")
+        except Exception as e:
+            logging.error(f"取色失败: {e}")
         return
 
 def start_keyboard_listener():
@@ -811,7 +593,6 @@ def start_keyboard_listener():
 
 def main():
     """主函数"""
-    ensure_sample_folder()
     ensure_debug_folder()
     load_exclusion_zones()
     
@@ -828,9 +609,8 @@ def main():
         logging.error(f"以及窗口是否处于打开状态")
         logging.error(f"=====================================")
     
-    logging.info(f"“究极人性化”脚本 v99999 已启动")
+    logging.info(f"赛博义体V999已启动")
     show_shortcuts()
-    logging.info(f"当前像素判定阈值: 面积<{SMALL_PIXEL_MAX_AREA}, 尺寸<{SMALL_PIXEL_MAX_DIMENSION}")
     logging.info(f"调试模式: {'开启' if DEBUG_MODE else '关闭'}")
     logging.info(f"拖动功能: {'开启' if USE_SPACEBAR_DRAG else '关闭'} (最小连续点数: {MIN_DRAG_POINTS})")
     
@@ -858,7 +638,10 @@ def main():
                 start_pos = group[0]
                 final_x = target_window_info['left'] + start_pos[0]
                 final_y = target_window_info['top'] + start_pos[1]
-                pyautogui.moveTo(final_x, final_y, duration=MOUSE_MOVE_DURATION)
+                
+                # 根据是否调试模式选择移动速度
+                move_duration = DEBUG_MOVE_DURATION if DEBUG_MODE else MOUSE_MOVE_DURATION
+                pyautogui.moveTo(final_x, final_y, duration=move_duration)
                 
                 if len(group) == 1: # 单点, 直接点击
                     if not DEBUG_MODE: 
@@ -872,7 +655,7 @@ def main():
                     if not DEBUG_MODE: 
                         # 使用pynput的键盘控制器按下空格键
                         keyboard_controller.press(keyboard.Key.space)
-                        time.sleep(0.05)  # 减少延迟确保空格键被识别
+                        time.sleep(0.05)
                     
                     try:
                         for i in range(1, len(group)):
@@ -880,7 +663,11 @@ def main():
                             point = group[i]
                             final_x = target_window_info['left'] + point[0]
                             final_y = target_window_info['top'] + point[1]
-                            pyautogui.moveTo(final_x, final_y, duration=DRAG_MOVE_DURATION)
+                            
+                            # 根据是否调试模式选择移动速度
+                            drag_duration = DEBUG_MOVE_DURATION if DEBUG_MODE else DRAG_MOVE_DURATION
+                            pyautogui.moveTo(final_x, final_y, duration=drag_duration)
+                            
                             # 拖动时每个点之间应用更短的延迟
                             time.sleep(DRAG_POINT_INTERVAL)
                     finally:
